@@ -4,7 +4,7 @@ An Android companion for monitoring a Codex desktop session over a paired local 
 
 ## Android updates
 
-The app checks the latest public GitHub Release for the configured `owner/repository`. Releases must have a version tag such as `v1.2.0` and include the generated `app-release.apk`. The app downloads the APK and opens Android's package installer. Android installs it over the existing app when the package id and signing certificate match; app data is retained.
+The app automatically checks the latest public release from `Aigooz/codex-remote` when it starts. You can also check immediately from Settings; no repository address is required and the app does not impose a check interval. Releases must have a version tag such as `v1.2.0` and include an APK. The app downloads the APK and opens Android's package installer. Android installs it over the existing app when the package id and signing certificate match; app data is retained.
 
 To publish a release:
 
@@ -15,7 +15,7 @@ To publish a release:
    - `ANDROID_KEY_ALIAS`: signing key alias.
    - `ANDROID_KEY_PASSWORD`: signing key password.
 3. Push a tag matching the app version, for example `v1.2.0`. The workflow builds a signed APK and attaches it to a GitHub Release.
-4. In the app, open Settings, enter the public repository as `owner/repository`, and tap Check for updates.
+4. Publish the release. Installed apps check for it at startup, or users can tap Check for updates in Settings.
 
 The release keystore is generated locally at `android/app/release.keystore` and is excluded from Git. Store it and its passwords in a secure password manager and back it up offline. Losing the keystore means Android will not accept in-place updates signed with a replacement key. Never commit the keystore or passwords to the repository.
 
