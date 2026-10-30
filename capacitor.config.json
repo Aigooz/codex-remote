@@ -1,0 +1,8 @@
+{
+  "appId": "com.codexremote.mobile",
+  "appName": "Codex Remote",
+  "webDir": "dist",
+  "server": {
+    "cleartext": true
+  }
+}
