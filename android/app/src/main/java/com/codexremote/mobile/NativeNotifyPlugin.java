@@ -5,6 +5,8 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageInfo;
+import android.content.pm.Signature;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -24,6 +26,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -113,6 +116,7 @@ public class NativeNotifyPlugin extends Plugin {
                 }
             }
             if (apk.length() < 1024) throw new IllegalStateException("下载的安装包无效");
+            validateUpdatePackage(apk);
             File downloaded = apk;
             getActivity().runOnUiThread(() -> launchInstaller(downloaded, call));
         } catch (Exception error) {
@@ -120,6 +124,27 @@ public class NativeNotifyPlugin extends Plugin {
             call.reject("更新下载失败：" + error.getMessage(), error);
         } finally {
             if (connection != null) connection.disconnect();
+        }
+    }
+
+    private void validateUpdatePackage(File apk) throws Exception {
+        PackageManager manager = getContext().getPackageManager();
+        int signingFlag = Build.VERSION.SDK_INT >= 28 ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+        PackageInfo candidate = manager.getPackageArchiveInfo(apk.getAbsolutePath(), signingFlag);
+        if (candidate == null || !getContext().getPackageName().equals(candidate.packageName)) {
+            throw new IllegalStateException("下载包不是 Codex Remote 安装包");
+        }
+        PackageInfo installed = manager.getPackageInfo(getContext().getPackageName(), signingFlag);
+        Signature[] candidateSignatures = Build.VERSION.SDK_INT >= 28
+                ? candidate.signingInfo.getApkContentsSigners() : candidate.signatures;
+        Signature[] installedSignatures = Build.VERSION.SDK_INT >= 28
+                ? installed.signingInfo.getApkContentsSigners() : installed.signatures;
+        if (candidateSignatures == null || installedSignatures == null
+                || !Arrays.equals(candidateSignatures, installedSignatures)) {
+            throw new IllegalStateException("更新包签名与当前安装不一致，Android 无法覆盖安装");
+        }
+        if (Build.VERSION.SDK_INT >= 28 && candidate.getLongVersionCode() <= installed.getLongVersionCode()) {
+            throw new IllegalStateException("下载包版本不高于当前版本");
         }
     }
 

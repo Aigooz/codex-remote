@@ -29,6 +29,7 @@ function render() {
   const history = turns.flatMap(turn => turn.items.map(item => ({ ...item, turnId: turn.id }))).slice(-16).reverse();
   document.querySelector('#app').innerHTML = `<main class="phone-shell">
     <header class="topbar"><div class="brand"><span class="brand-mark">${icon('command', 18)}</span><span>codex<span class="brand-light">remote</span></span></div><button class="icon-button" id="notifications" aria-label="通知" title="通知">${icon('bell', 18)}${state.notification ? '<span class="notification-dot visible"></span>' : ''}</button></header>
+    ${state.update ? `<div class="update-release update-banner" role="status"><strong>发现新版本 ${esc(state.update.version)}</strong><button class="primary-small" id="install-update" type="button">${icon('refresh-cw', 15)} 下载并安装</button></div>` : ''}
     ${state.view === 'work' ? `<section class="workspace-head"><div class="eyebrow"><span class="pulse ${active ? 'active' : 'idle'}"></span>${state.connected ? active ? 'LIVE SESSION' : 'SESSION CONNECTED' : 'NOT CONNECTED'}</div><h1>${esc(thread?.name || 'Codex 工作台')}</h1><div class="machine-row"><span class="machine-icon">${icon('monitor', 15)}</span><span>电脑 Codex</span><span class="separator">/</span><span class="repo-name">${esc(thread?.cwd || '等待连接')}</span><span class="connection-pill">${icon('wifi', 12)} ${state.connected ? '实时' : '离线'}</span></div><div class="connection-inline ${state.connectionState}">${icon(connectionStatus().icon, 14)}<span><strong>${esc(connectionStatus().title)}</strong><small>${esc(state.connectionMessage)}</small></span></div></section>
     <section class="task-panel"><div class="task-meta"><span class="task-label">会话状态</span><span class="elapsed">${icon('clock-3', 13)} ${active ? '正在处理' : thread ? '等待输入' : '未连接'}</span></div><h2>${esc(thread?.preview || (state.connected ? '等待 Codex 活动' : '连接电脑上的 Codex'))}</h2><div class="progress-line"><div class="progress-track"><span class="indeterminate" style="width:${active ? '48%' : '0%'}"></span></div><strong>${active ? '运行中' : thread ? '就绪' : '—'}</strong></div><div class="task-foot"><span>${icon('code-2', 14)} ${esc(thread?.model || 'Codex')}</span><span>${thread ? new Date(thread.updatedAt * 1000).toLocaleString() : ''}</span></div></section>
     <div class="section-heading"><div><span class="section-kicker">LIVE ACTIVITY</span><h3>真实会话动态</h3></div><span class="live-tag">${active ? icon('loader-circle', 13) : icon('circle-check', 13)} ${active ? '处理中' : '已同步'}</span></div>
@@ -133,21 +134,28 @@ function threadLabel() { return state.snapshot?.thread?.name || '当前 Codex �
 async function checkForUpdate() {
   state.checkingUpdate = true; state.update = null; state.updateStatus = ''; render();
   try {
-    const response = await fetch(`https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+    const response = await fetch(`https://api.github.com/repos/${UPDATE_REPOSITORY}/releases?per_page=100`, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
     if (!response.ok) throw new Error(response.status === 404 ? '找不到公开仓库或尚未发布版本' : `GitHub 请求失败 (${response.status})`);
-    const release = await response.json();
-    const asset = release.assets?.find(item => item.name.toLowerCase().endsWith('.apk'));
-    if (!asset) throw new Error('最新 Release 中没有 APK 安装包');
+    const releases = await response.json();
     const installed = await NativeNotify.getAppVersion();
-    const latest = release.tag_name.replace(/^v/i, '').split('.').map(part => Number.parseInt(part, 10) || 0);
-    const current = installed.versionName.split('.').map(part => Number.parseInt(part, 10) || 0);
-    let comparison = 0;
-    for (let index = 0; index < Math.max(latest.length, current.length); index += 1) {
-      if ((latest[index] || 0) !== (current[index] || 0)) { comparison = (latest[index] || 0) > (current[index] || 0) ? 1 : -1; break; }
-    }
-    const newer = comparison > 0;
-    state.update = newer ? { version: release.tag_name, url: asset.browser_download_url, notes: release.body || '' } : null;
-    state.updateStatus = newer ? `发现新版本 ${release.tag_name}` : `已是最新版本（${installed.versionName}）`;
+    const current = installed.versionName.split(/[.+-]/)[0].split('.').map(part => Number.parseInt(part, 10) || 0);
+    const newerReleases = releases.map(release => {
+      const version = release.tag_name.replace(/^v/i, '');
+      const numbers = version.split(/[.+-]/)[0].split('.').map(part => Number.parseInt(part, 10));
+      const asset = release.assets?.find(item => item.name.toLowerCase().endsWith('.apk'));
+      if (!asset || !numbers.length || numbers.some(Number.isNaN)) return null;
+      for (let index = 0; index < Math.max(numbers.length, current.length); index += 1) {
+        if ((numbers[index] || 0) !== (current[index] || 0)) return (numbers[index] || 0) > (current[index] || 0) ? { version, url: asset.browser_download_url, notes: release.body || '', numbers } : null;
+      }
+      return null;
+    }).filter(Boolean).sort((a, b) => {
+      for (let index = 0; index < Math.max(a.numbers.length, b.numbers.length); index += 1) {
+        if ((a.numbers[index] || 0) !== (b.numbers[index] || 0)) return (b.numbers[index] || 0) - (a.numbers[index] || 0);
+      }
+      return 0;
+    });
+    state.update = newerReleases[0] || null;
+    state.updateStatus = state.update ? `发现新版本 ${state.update.version}` : `已是最新版本（${installed.versionName}）`;
   } catch (error) { state.updateStatus = error.message || '检查更新失败'; }
   finally { state.checkingUpdate = false; render(); }
 }

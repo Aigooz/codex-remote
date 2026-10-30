@@ -4,7 +4,7 @@ An Android companion for monitoring a Codex desktop session over a paired local 
 
 ## Android updates
 
-The app automatically checks the latest public release from `Aigooz/codex-remote` when it starts. You can also check immediately from Settings; no repository address is required and the app does not impose a check interval. Releases must have a version tag such as `v1.2.0` and include an APK. The app downloads the APK and opens Android's package installer. Android installs it over the existing app when the package id and signing certificate match; app data is retained.
+The app checks public releases from `Aigooz/codex-remote` when it starts and can be checked immediately from Settings; no repository address or check interval is required. A newer version is shown on the work screen and in Settings. The app verifies the downloaded APK package, version and signing certificate before opening Android's installer. Android installs it over the existing app only when the package id and signing certificate match; app data is retained. Checks run while the app is open; background push notifications require a separate push service.
 
 To publish a release:
 
