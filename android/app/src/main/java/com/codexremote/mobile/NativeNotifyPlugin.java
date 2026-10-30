@@ -92,7 +92,7 @@ public class NativeNotifyPlugin extends Plugin {
             call.reject("更新地址必须是 GitHub Release APK");
             return;
         }
-        if (!expectedSha256.isEmpty() && !expectedSha256.matches("[a-f0-9]{64}")) {
+        if (!expectedSha256.matches("[a-f0-9]{64}")) {
             call.reject("GitHub 返回的安装包校验信息无效，请稍后重试");
             return;
         }
@@ -148,7 +148,7 @@ public class NativeNotifyPlugin extends Plugin {
                 }
 
                 if (total != expectedSize || partial.length() != expectedSize) throw new IllegalStateException("APK 下载不完整，请检查网络后重试");
-                if (!expectedSha256.isEmpty() && !MessageDigest.isEqual(toHex(digest.digest()).getBytes(java.nio.charset.StandardCharsets.US_ASCII), expectedSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+                if (!MessageDigest.isEqual(toHex(digest.digest()).getBytes(java.nio.charset.StandardCharsets.US_ASCII), expectedSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
                     throw new IllegalStateException("APK 完整性校验失败，已阻止安装，请重新下载");
                 }
                 validateUpdatePackage(partial);
