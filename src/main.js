@@ -145,7 +145,7 @@ async function checkForUpdate() {
       const asset = release.assets?.find(item => item.name.toLowerCase().endsWith('.apk'));
       if (!asset || !numbers.length || numbers.some(Number.isNaN)) return null;
       for (let index = 0; index < Math.max(numbers.length, current.length); index += 1) {
-        if ((numbers[index] || 0) !== (current[index] || 0)) return (numbers[index] || 0) > (current[index] || 0) ? { version, url: asset.browser_download_url, notes: release.body || '', numbers } : null;
+        if ((numbers[index] || 0) !== (current[index] || 0)) return (numbers[index] || 0) > (current[index] || 0) ? { version, url: asset.browser_download_url, sha256: asset.digest?.replace(/^sha256:/i, '') || '', size: asset.size || 0, notes: release.body || '', numbers } : null;
       }
       return null;
     }).filter(Boolean).sort((a, b) => {
@@ -186,7 +186,7 @@ function bind() {
     else if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
   });
   document.querySelector('#check-update')?.addEventListener('click', checkForUpdate);
-  document.querySelector('#install-update')?.addEventListener('click', async () => { try { state.updateStatus = '正在下载更新…'; render(); const result = await NativeNotify.installUpdate({ url: state.update.url }); state.updateStatus = result.needsPermission ? '请允许此应用安装未知应用，然后返回并再次点击安装' : '安装程序已打开'; } catch (error) { state.updateStatus = error.message || '更新安装失败'; } render(); });
+  document.querySelector('#install-update')?.addEventListener('click', async () => { try { state.updateStatus = '正在下载并验证安装包…'; render(); const result = await NativeNotify.installUpdate({ url: state.update.url, sha256: state.update.sha256, size: state.update.size }); state.updateStatus = result.needsPermission ? '请允许此应用安装未知应用，然后返回并再次点击安装' : '安装包验证通过，Android 安装程序已打开'; } catch (error) { state.updateStatus = error.message || '更新安装失败'; } render(); });
   document.querySelector('#notification-toggle')?.addEventListener('click', async () => { state.notifications = !state.notifications; store(); if (state.notifications && Capacitor.isNativePlatform()) await NativeNotify.requestPermission(); else if (state.notifications && 'Notification' in window) await Notification.requestPermission(); render(); });
   document.querySelector('#task-form')?.addEventListener('submit', e => { e.preventDefault(); const text = document.querySelector('#task-input').value.trim(); if (!text || !state.ws || !state.token) return; state.ws.send(JSON.stringify({ type: 'send', token: state.token, text })); document.querySelector('#task-input').value = ''; });
   document.querySelector('#task-input')?.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); document.querySelector('#task-form').requestSubmit(); } });

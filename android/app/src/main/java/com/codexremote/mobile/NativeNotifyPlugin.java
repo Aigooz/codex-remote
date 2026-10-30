@@ -24,11 +24,15 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Locale;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.zip.ZipFile;
 
 @CapacitorPlugin(name = "NativeNotify", permissions = {@Permission(alias = "notifications", strings = {Manifest.permission.POST_NOTIFICATIONS})})
 public class NativeNotifyPlugin extends Plugin {
@@ -81,53 +85,118 @@ public class NativeNotifyPlugin extends Plugin {
     @PluginMethod
     public void installUpdate(PluginCall call) {
         String source = call.getString("url", "");
+        String expectedSha256 = call.getString("sha256", "").trim().toLowerCase(Locale.ROOT);
+        long expectedSize = call.getLong("size", 0L);
         Uri sourceUri = Uri.parse(source);
         if (!"https".equalsIgnoreCase(sourceUri.getScheme()) || !"github.com".equalsIgnoreCase(sourceUri.getHost()) || sourceUri.getPath() == null || !sourceUri.getPath().contains("/releases/download/")) {
             call.reject("更新地址必须是 GitHub Release APK");
             return;
         }
-        updateExecutor.execute(() -> downloadUpdate(source, call));
+        if (!expectedSha256.isEmpty() && !expectedSha256.matches("[a-f0-9]{64}")) {
+            call.reject("GitHub 返回的安装包校验信息无效，请稍后重试");
+            return;
+        }
+        if (expectedSize < 1024 || expectedSize > 150L * 1024 * 1024) {
+            call.reject("GitHub 返回的安装包大小无效");
+            return;
+        }
+        updateExecutor.execute(() -> downloadUpdate(source, expectedSha256, expectedSize, call));
     }
 
-    private void downloadUpdate(String source, PluginCall call) {
-        HttpURLConnection connection = null;
+    private void downloadUpdate(String source, String expectedSha256, long expectedSize, PluginCall call) {
         File apk = null;
-        try {
+        File partial = null;
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            HttpURLConnection connection = null;
             File directory = getContext().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-            if (directory == null) throw new IllegalStateException("无法访问应用下载目录");
-            if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建下载目录");
-            apk = new File(directory, "codex-remote-update.apk");
-            connection = (HttpURLConnection) new URL(source).openConnection();
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(30000);
-            connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("Accept", "application/octet-stream");
-            int status = connection.getResponseCode();
-            if (status < 200 || status >= 300) throw new IllegalStateException("下载失败，HTTP " + status);
-            if (connection.getContentLengthLong() > 150L * 1024 * 1024) throw new IllegalStateException("APK 文件超过 150 MB 限制");
-            try (java.io.InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(apk)) {
-                byte[] buffer = new byte[16384];
-                long total = 0;
-                int count;
-                while ((count = input.read(buffer)) != -1) {
-                    total += count;
-                    if (total > 150L * 1024 * 1024) throw new IllegalStateException("APK 文件超过 150 MB 限制");
-                    output.write(buffer, 0, count);
+            try {
+                if (directory == null) throw new IllegalStateException("无法访问应用下载目录");
+                if (!directory.exists() && !directory.mkdirs()) throw new IllegalStateException("无法创建下载目录");
+                apk = new File(directory, "codex-remote-update.apk");
+                partial = new File(directory, "codex-remote-update.apk.part");
+                if (partial.exists() && !partial.delete()) throw new IllegalStateException("无法清理未完成的下载文件");
+
+                connection = (HttpURLConnection) new URL(source).openConnection();
+                connection.setConnectTimeout(30000);
+                connection.setReadTimeout(60000);
+                connection.setInstanceFollowRedirects(true);
+                connection.setRequestProperty("Accept", "application/octet-stream");
+                connection.setRequestProperty("Accept-Encoding", "identity");
+                connection.setRequestProperty("Cache-Control", "no-cache");
+                int status = connection.getResponseCode();
+                if (status < 200 || status >= 300) throw new IllegalStateException("下载失败，HTTP " + status);
+                String finalHost = connection.getURL().getHost();
+                if (!"https".equalsIgnoreCase(connection.getURL().getProtocol()) || !("github.com".equalsIgnoreCase(finalHost) || finalHost.toLowerCase(Locale.ROOT).endsWith(".githubusercontent.com"))) {
+                    throw new IllegalStateException("更新下载被重定向到非 GitHub 地址");
                 }
+                long contentLength = connection.getContentLengthLong();
+                if (contentLength >= 0 && contentLength != expectedSize) throw new IllegalStateException("下载大小与 GitHub 发布信息不一致");
+
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                long total = 0;
+                try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(partial)) {
+                    byte[] buffer = new byte[32768];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                        total += count;
+                        if (total > expectedSize || total > 150L * 1024 * 1024) throw new IllegalStateException("下载文件超过 GitHub 声明的大小");
+                        digest.update(buffer, 0, count);
+                        output.write(buffer, 0, count);
+                    }
+                    output.getFD().sync();
+                }
+
+                if (total != expectedSize || partial.length() != expectedSize) throw new IllegalStateException("APK 下载不完整，请检查网络后重试");
+                if (!expectedSha256.isEmpty() && !MessageDigest.isEqual(toHex(digest.digest()).getBytes(java.nio.charset.StandardCharsets.US_ASCII), expectedSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+                    throw new IllegalStateException("APK 完整性校验失败，已阻止安装，请重新下载");
+                }
+                validateUpdatePackage(partial);
+                if (apk.exists() && !apk.delete()) throw new IllegalStateException("无法替换旧的更新文件");
+                if (!partial.renameTo(apk)) throw new IllegalStateException("无法保存已验证的更新文件");
+                File downloaded = apk;
+                getActivity().runOnUiThread(() -> launchInstaller(downloaded, call));
+                return;
+            } catch (Exception error) {
+                lastError = error;
+                if (partial != null && partial.exists()) partial.delete();
+                if (connection != null && attempt < 3) {
+                    try { Thread.sleep(500L * attempt); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
+                }
+            } finally {
+                if (connection != null) connection.disconnect();
             }
-            if (apk.length() < 1024) throw new IllegalStateException("下载的安装包无效");
-            validateUpdatePackage(apk);
-            File downloaded = apk;
-            getActivity().runOnUiThread(() -> launchInstaller(downloaded, call));
-        } catch (Exception error) {
-            if (apk != null) apk.delete();
-            call.reject("更新下载失败：" + error.getMessage(), error);
-        } finally {
-            if (connection != null) connection.disconnect();
         }
+        String detail = lastError == null ? "下载中断" : lastError.getMessage();
+        call.reject("更新未安装：" + (detail == null ? "安装包验证失败" : detail) + "。请检查网络后重新下载。", lastError);
+    }
+
+    private String toHex(byte[] value) {
+        StringBuilder result = new StringBuilder(value.length * 2);
+        for (byte item : value) result.append(String.format(Locale.ROOT, "%02x", item & 0xff));
+        return result.toString();
     }
 
     private void validateUpdatePackage(File apk) throws Exception {
+        try (ZipFile archive = new ZipFile(apk)) {
+            if (archive.getEntry("AndroidManifest.xml") == null) throw new IllegalStateException("文件不是有效的 Android 安装包");
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = archive.entries();
+            long expandedSize = 0;
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
+                try (InputStream input = archive.getInputStream(entry)) {
+                    byte[] buffer = new byte[32768];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                        expandedSize += count;
+                        if (expandedSize > 512L * 1024 * 1024) throw new IllegalStateException("APK 解压内容异常");
+                    }
+                } catch (Exception error) {
+                    if (error instanceof IllegalStateException) throw (IllegalStateException) error;
+                    throw new IllegalStateException("APK 压缩数据损坏", error);
+                }
+            }
+        }
         PackageManager manager = getContext().getPackageManager();
         int signingFlag = Build.VERSION.SDK_INT >= 28 ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
         PackageInfo candidate = manager.getPackageArchiveInfo(apk.getAbsolutePath(), signingFlag);
@@ -143,7 +212,9 @@ public class NativeNotifyPlugin extends Plugin {
                 || !Arrays.equals(candidateSignatures, installedSignatures)) {
             throw new IllegalStateException("更新包签名与当前安装不一致，Android 无法覆盖安装");
         }
-        if (Build.VERSION.SDK_INT >= 28 && candidate.getLongVersionCode() <= installed.getLongVersionCode()) {
+        long candidateVersion = Build.VERSION.SDK_INT >= 28 ? candidate.getLongVersionCode() : candidate.versionCode;
+        long installedVersion = Build.VERSION.SDK_INT >= 28 ? installed.getLongVersionCode() : installed.versionCode;
+        if (candidateVersion <= installedVersion) {
             throw new IllegalStateException("下载包版本不高于当前版本");
         }
     }
